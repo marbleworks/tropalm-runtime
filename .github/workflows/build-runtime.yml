@@ -1,0 +1,112 @@
+# Builds the speech server the game downloads as a runtime (llama.cpp's llama-server with the
+# POST /tts route of PR #26603) and publishes it as a GitHub release of this repository.
+#
+# Lives in the runtime repository (marbleworks/tropalm-runtime) as .github/workflows/build-runtime.yml,
+# with tools/runtime/build.py from the game repository at build.py in its root. Inside the game
+# repository (tools/runtime/) it is inert: GitHub only runs a repository's own top-level workflows.
+# See tools/runtime/README.md in the game repository.
+name: Build the speech server
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: "llama.cpp commit to build (the PR #26603 head the game was measured on)"
+        default: "435d4116eda2abbcdc3d63d85204470070f32705"
+      cuda:
+        description: "CUDA toolkit version, as NVIDIA's redistrib_<version>.json names it"
+        default: "12.8.1"
+      vulkan:
+        description: "Also build Vulkan (the pinned commit predates the GET_ROWS fix Qwen3-TTS needs there)"
+        type: boolean
+        default: false
+      publish:
+        description: "Create the release llama-tts-server-<commit7> with the zips and their catalog entries"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        flavour: [cpu, cuda, vulkan]
+    steps:
+      - uses: actions/checkout@v4
+        if: matrix.flavour != 'vulkan' || inputs.vulkan
+      - uses: actions/setup-python@v5
+        if: matrix.flavour != 'vulkan' || inputs.vulkan
+        with:
+          python-version: "3.12"
+      - name: The source, at the pin
+        if: matrix.flavour != 'vulkan' || inputs.vulkan
+        run: python build.py source --dest llama.cpp --commit ${{ inputs.commit }}
+      - name: The CUDA toolkit, from NVIDIA's redistributable archives
+        if: matrix.flavour == 'cuda'
+        run: python build.py cuda --version ${{ inputs.cuda }} --dest cuda
+      - name: The Vulkan SDK
+        if: matrix.flavour == 'vulkan' && inputs.vulkan
+        shell: pwsh
+        run: |
+          $version = (Invoke-RestMethod "https://vulkan.lunarg.com/sdk/latest/windows.txt").Trim()
+          curl.exe -L -o "$env:RUNNER_TEMP\vulkan.exe" "https://sdk.lunarg.com/sdk/download/$version/windows/vulkansdk-windows-X64-$version.exe"
+          & "$env:RUNNER_TEMP\vulkan.exe" --accept-licenses --default-answer --confirm-command install
+          "VULKAN_SDK=C:\VulkanSDK\$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "C:\VulkanSDK\$version\Bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+      - name: Build and pack
+        if: matrix.flavour != 'vulkan' || inputs.vulkan
+        run: >
+          python build.py build --source llama.cpp --flavour ${{ matrix.flavour }} --out dist
+          ${{ matrix.flavour == 'cuda' && '--cuda-root cuda' || '' }}
+      - uses: actions/upload-artifact@v4
+        if: matrix.flavour != 'vulkan' || inputs.vulkan
+        with:
+          name: runtime-windows-${{ matrix.flavour }}
+          path: dist/*.zip*
+
+  macos:
+    runs-on: macos-14
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: The source, at the pin
+        run: python3 build.py source --dest llama.cpp --commit ${{ inputs.commit }}
+      - name: Build and pack
+        run: python3 build.py build --source llama.cpp --flavour metal --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-macos-metal
+          path: dist/*.zip*
+
+  release:
+    if: inputs.publish && !cancelled()
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: The catalog entries, together
+        run: |
+          python3 - <<'EOF'
+          import glob, json
+          entries = [json.load(open(p)) for p in sorted(glob.glob("dist/*.zip.json"))]
+          json.dump(entries, open("dist/runtimes.json", "w"), indent=2)
+          with open("summary.md", "w") as out:
+              out.write("Paste into the catalog's `runtimes` (catalog/v1/models.json), raise its revision:\n\n")
+              out.write("```json\n" + json.dumps(entries, indent=2) + "\n```\n")
+          EOF
+          cat summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: The release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="llama-tts-server-$(echo '${{ inputs.commit }}' | cut -c1-7)"
+          gh release create "$tag" dist/*.zip dist/runtimes.json --repo "${{ github.repository }}" \
+            --title "$tag" --notes "llama.cpp ${{ inputs.commit }} (PR #26603), llama-server with POST /tts. Built by build.py. Licence: MIT (llama.cpp); licenses/ in each zip."
