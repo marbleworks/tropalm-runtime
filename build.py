@@ -226,6 +226,16 @@ def build(opts):
     shutil.copy2(os.path.join(src, "LICENSE"), os.path.join(stage, "licenses", "LICENSE-llama.cpp"))
     for path in glob.glob(os.path.join(src, "licenses", "*")):
         shutil.copy2(path, os.path.join(stage, "licenses"))
+    # The code vendored under vendor/ is compiled into the server (cpp-httplib into it, the hashes
+    # into mtmd), and its notices sit beside it rather than in licenses/: each is carried by the
+    # name of the folder it came from. The pin embeds none of them in the program.
+    for path in glob.glob(os.path.join(src, "vendor", "**", "LICENSE*"), recursive=True):
+        folder = os.path.basename(os.path.dirname(path))
+        shutil.copy2(path, os.path.join(stage, "licenses", "LICENSE-" + folder))
+    if flavour == "cuda":
+        # NVIDIA's runtime libraries ride in the zip; every redistributable archive carries the
+        # CUDA EULA at its root, which the toolkit assembled by `cuda` keeps as LICENSE.
+        shutil.copy2(os.path.join(env["CUDA_PATH"], "LICENSE"), os.path.join(stage, "licenses", "LICENSE-CUDA"))
     with open(os.path.join(stage, "licenses", "SOURCE.txt"), "w", encoding="utf-8") as fh:
         fh.write("llama.cpp %s (%s, PR #26603 head)\nbuilt by tools/runtime/build.py, flavour %s\n"
                  % (commit, UPSTREAM, flavour))
