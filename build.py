@@ -16,8 +16,9 @@ the server as the only target:
     cpu     GGML_BACKEND_DL + GGML_NATIVE=OFF + GGML_CPU_ALL_VARIANTS: one ggml-cpu-<x>.dll per
             instruction set (sse4.2 ... avx2 ... avx512), the best one picked at start-up.
     cuda    the same, plus GGML_CUDA with CMAKE_CUDA_ARCHITECTURES left to upstream's non-native
-            default -- on CUDA >= 12.8 that is 75-virtual 80-virtual 86-real 89-real 90-virtual
-            120a-real: real code for Turing to Blackwell's consumer cards, PTX for anything newer.
+            default -- on CUDA 12.8 that is 50-virtual 61-virtual 70-virtual 75-virtual 80-virtual
+            86-real 89-real 90-virtual 120a-real (13.x drops the first three, 12.9 on adds
+            121a-real): real code for RTX 30 / 40 / 50, PTX the driver compiles for every other card.
             cudart / cuBLAS / cuBLASLt (and nvJitLink where the toolkit has it) ride in the zip.
     vulkan  the same, plus GGML_VULKAN (needs the Vulkan SDK's glslc on PATH).
     metal   macOS arm64: one static binary, the Metal library embedded.
